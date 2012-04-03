@@ -364,6 +364,8 @@ class BaseSearch(object):
                       'more_like_this', 'highlighter', 'faceter',
                       'sorter', 'facet_querier', 'field_limiter',)
 
+    result_constructor = dict
+
     def _init_common_modules(self):
         self.query_obj = LuceneQuery(self.schema, u'q')
         self.filter_obj = LuceneQuery(self.schema, u'fq')
@@ -466,9 +468,30 @@ class BaseSearch(object):
         # Next line is for pre-2.6.5 python
         return dict((k.encode('utf8'), v) for k, v in options.items())
 
+    def results_as(self, constructor):
+        newself = self.clone()
+        newself.result_constructor = constructor
+        return newself
+
     def transform_result(self, result, constructor):
         if constructor is not dict:
             result.result.docs = [constructor(**d) for d in result.result.docs]
+            # in future, highlighting chould be made available to
+            # custom constructors; perhaps document additional
+            # arguments result constructors are required to support, or check for
+            # an optional set_highlighting method
+        else:
+            if result.highlighting:
+                for d in result.result.docs:
+                    # if the unique key for a result doc is present in highlighting,
+                    # add the highlighting for that document into the result dict
+                    # (but don't override any existing content)
+                    # If unique key field is not a string field (eg int) then we need to
+                    # convert it to its solr representation
+                    unique_key = self.schema.fields[self.schema.unique_key].to_solr(d[self.schema.unique_key])
+                    if 'solr_highlights' not in d and \
+                           unique_key in result.highlighting:
+                        d['solr_highlights'] = result.highlighting[unique_key]
         return result
 
     def params(self):
@@ -498,8 +521,6 @@ class BaseSearch(object):
     def __getitem__(self, k):
         """Return a single result or slice of results from the query.
         """
-        # NOTE: only supports the default result constructor.
-
         # are we already paginated? if so, we'll apply this getitem to the
         # paginated result - else we'll apply it to the whole.
         offset = 0 if self.paginator.start is None else self.paginator.start
@@ -538,13 +559,14 @@ class BaseSearch(object):
             rows = stop - start
             if self.paginator.rows is not None:
                 rows = min(rows, self.paginator.rows)
-
-            if rows <= 0:
-                return []
+            rows = max(rows, 0)
 
             start += offset
 
-            return self.paginate(start=start, rows=rows).execute()[::step]
+            response = self.paginate(start=start, rows=rows).execute()
+            if step != 1:
+                response.result.docs = response.result.docs[::step]
+            return response
 
         else:
             # if not a slice, a single result is being requested
@@ -572,6 +594,7 @@ class SolrSearch(BaseSearch):
         else:
             for opt in self.option_modules:
                 setattr(self, opt, getattr(original, opt).clone())
+            self.result_constructor = original.result_constructor
 
     def options(self):
         options = super(SolrSearch, self).options()
@@ -579,7 +602,9 @@ class SolrSearch(BaseSearch):
             options['q'] = '*:*' # search everything
         return options
 
-    def execute(self, constructor=dict):
+    def execute(self, constructor=None):
+        if constructor is None:
+            constructor = self.result_constructor
         result = self.interface.search(**self.options())
         return self.transform_result(result, constructor)
 

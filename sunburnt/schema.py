@@ -69,7 +69,7 @@ class solr_date(object):
         """ Serialize a datetime object in the format required
         by Solr. See http://wiki.apache.org/solr/IndexingDates
         """
-        return u"%s.%sZ" % (self._dt_obj.strftime("%Y-%m-%dT%H:%M:%S"),
+        return u"%s.%sZ" % (self._dt_obj.isoformat(),
                             "%06d" % self.microsecond)
 
     def __cmp__(self, other):
@@ -521,7 +521,7 @@ class SolrSchema(object):
         if field_class is None and name == "score":
             field_class = SolrScoreField()
         elif field_class is None:
-            raise SolrError("unexpected field found in result")
+            raise SolrError("unexpected field found in result (field name: %s)" % name)
         return name, SolrFieldInstance.from_solr(field_class, doc.text or '').to_user_data()
 
 
@@ -639,6 +639,7 @@ class SolrFacetCounts(object):
 class SolrResponse(object):
     def __init__(self, schema, xmlmsg):
         self.schema = schema
+        self.original_xml = xmlmsg
         doc = lxml.etree.fromstring(xmlmsg)
         details = dict(value_from_node(n) for n in
                        doc.xpath("/response/lst[@name!='moreLikeThis']"))

@@ -628,6 +628,7 @@ class SolrSearch(BaseSearch):
             options['q'] = '*:*'  # search everything
         if self.def_type:
             options['defType'] = self.def_type
+            options['mm'] = 1
         return options
 
     def execute(self, constructor=None):

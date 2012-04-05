@@ -1,16 +1,20 @@
 from __future__ import absolute_import
 
-import collections, copy, operator, re
+import collections
+import copy
+import operator
+import re
 
 from .schema import SolrError, SolrBooleanField, SolrUnicodeField, WildcardFieldInstance
 
 
 class LuceneQuery(object):
     default_term_re = re.compile(r'^\w+$')
-    def __init__(self, schema, option_flag=None, original=None):
+    def __init__(self, schema, option_flag=None, original=None, escape=True):
         self.schema = schema
         self.normalized = False
         if original is None:
+            self.escape = escape
             self.option_flag = option_flag
             self.terms = collections.defaultdict(set)
             self.phrases = collections.defaultdict(set)
@@ -20,6 +24,7 @@ class LuceneQuery(object):
             self._or = self._not = self._pow = False
             self.boosts = []
         else:
+            self.escape = original.escape
             self.option_flag = original.option_flag
             self.terms = copy.copy(original.terms)
             self.phrases = copy.copy(original.phrases)
@@ -74,10 +79,11 @@ class LuceneQuery(object):
                 field = self.schema.match_field(name)
             else:
                 field = self.schema.default_field
+
             if name:
-                s += [u'%s:%s' % (name, value.to_query()) for value in value_set]
+                s += [u'%s:%s' % (name, value.to_query(self.escape)) for value in value_set]
             else:
-                s += [value.to_query() for value in value_set]
+                s += [value.to_query(self.escape) for value in value_set]
         return u' AND '.join(sorted(s))
 
     range_query_templates = {
@@ -264,7 +270,7 @@ class LuceneQuery(object):
         q._and = False
         q._pow = value
         return q
-        
+
     def add(self, args, kwargs):
         self.normalized = False
         _args = []
@@ -357,17 +363,25 @@ class LuceneQuery(object):
         self.boosts.append((kwargs, boost_score))
 
 
-
 class BaseSearch(object):
     """Base class for common search options management"""
-    option_modules = ('query_obj', 'filter_obj', 'paginator',
-                      'more_like_this', 'highlighter', 'faceter',
-                      'sorter', 'facet_querier', 'field_limiter',)
+    option_modules = (
+        'query_obj',
+        'filter_obj',
+        'paginator',
+        'more_like_this',
+        'highlighter',
+        'faceter',
+        'sorter',
+        'facet_querier',
+        'field_limiter',
+        'spellchecker'
+    )
 
     result_constructor = dict
 
     def _init_common_modules(self):
-        self.query_obj = LuceneQuery(self.schema, u'q')
+        self.query_obj = LuceneQuery(self.schema, u'q', escape=self.def_type in [None, 'lucene'])
         self.filter_obj = LuceneQuery(self.schema, u'fq')
         self.paginator = PaginateOptions(self.schema)
         self.highlighter = HighlightOptions(self.schema)
@@ -375,9 +389,10 @@ class BaseSearch(object):
         self.sorter = SortOptions(self.schema)
         self.field_limiter = FieldLimitOptions(self.schema)
         self.facet_querier = FacetQueryOptions(self.schema)
+        self.spellchecker = SpellcheckerOptions(self.schema)
 
     def clone(self):
-        return self.__class__(interface=self.interface, original=self)
+        return self.__class__(interface=self.interface, original=self, def_type=self.def_type)
 
     def Q(self, *args, **kwargs):
         q = LuceneQuery(self.schema)
@@ -441,6 +456,11 @@ class BaseSearch(object):
         newself.highlighter.update(fields, **kwargs)
         return newself
 
+    def spellcheck(self, **kwargs):
+        newself = self.clone()
+        newself.spellchecker.update(**kwargs)
+        return newself
+
     def mlt(self, fields, query_fields=None, **kwargs):
         newself = self.clone()
         newself.more_like_this.update(fields, query_fields, **kwargs)
@@ -500,8 +520,9 @@ class BaseSearch(object):
     ## methods to allow SolrSearch to be used with Django paginator ##
 
     _count = None
+
     def count(self):
-        # get the total count for the current query without retrieving any results 
+        # get the total count for the current query without retrieving any results
         # cache it, since it may be needed multiple times when used with django paginator
         if self._count is None:
             # are we already paginated? then we'll behave as if that's
@@ -585,9 +606,14 @@ class BaseSearch(object):
 
 
 class SolrSearch(BaseSearch):
-    def __init__(self, interface, original=None):
+    def __init__(self, interface, original=None, def_type=None):
         self.interface = interface
         self.schema = interface.schema
+        if def_type not in [None, 'edismax', 'dismax', 'lucene']:
+            raise SolrError('Invalid defType: %s' % def_type)
+
+        self.def_type = def_type
+
         if original is None:
             self.more_like_this = MoreLikeThisOptions(self.schema)
             self._init_common_modules()
@@ -599,7 +625,9 @@ class SolrSearch(BaseSearch):
     def options(self):
         options = super(SolrSearch, self).options()
         if 'q' not in options:
-            options['q'] = '*:*' # search everything
+            options['q'] = '*:*'  # search everything
+        if self.def_type:
+            options['defType'] = self.def_type
         return options
 
     def execute(self, constructor=None):
@@ -755,6 +783,55 @@ class FacetOptions(Options):
     def field_names_in_opts(self, opts, fields):
         if fields:
             opts["facet.field"] = sorted(fields)
+
+
+class SpellcheckerOptions(Options):
+    option_name = 'spellcheck'
+    opts = {
+            'q': unicode,
+            'build': bool,
+            'reload': bool,
+            'dictionary': unicode,
+            'count': int,
+            'onlyMorePopular': bool,
+            'extendedResults': bool,
+            }
+
+    def __init__(self, schema, original=None):
+        self.schema = schema
+        if original is None:
+            self.fields = collections.defaultdict(dict)
+            self.kwargs = {}
+            self.enabled = False
+        else:
+            self.fields = copy.copy(original.fields)
+            self.kwargs = copy.copy(original.kwargs)
+            self.enabled = original.enabled
+
+    def update(self, **kwargs):
+        self.enabled = True
+        self.kwargs.update(kwargs)
+
+    def options(self):
+        opts = {}
+        if self.enabled:
+            opts['spellcheck'] = True
+
+            for k, v in self.kwargs.items():
+                if k not in self.opts:
+                    raise SolrError("No such option for %s: %s" % (self.option_name, k))
+                opt_type = self.opts[k]
+                try:
+                    if isinstance(opt_type, (list, tuple)):
+                        assert v in opt_type
+                    elif isinstance(opt_type, type):
+                        v = opt_type(v)
+                    else:
+                        v = opt_type(self, v)
+                except:
+                    raise SolrError("Invalid value for %s option %s: %s" % (self.option_name, k, v))
+                opts['spellcheck.%s' % k] = v
+        return opts
 
 
 class HighlightOptions(Options):
@@ -1002,6 +1079,7 @@ class FacetQueryOptions(Options):
                     'facet':True}
         else:
             return {}
+
 
 def params_from_dict(**kwargs):
     utf8_params = []

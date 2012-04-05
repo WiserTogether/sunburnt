@@ -3,6 +3,7 @@ from __future__ import absolute_import
 import datetime
 import math
 import operator
+import re
 import uuid
 import warnings
 
@@ -132,8 +133,11 @@ class SolrField(object):
             elif self.name.endswith("*"):
                 self.wildcard_at_start = False
             else:
-                raise SolrError("Dynamic fields must have * at start or end of name (field %s)" % 
-                        self.name)
+                raise SolrError(
+                    "Dynamic fields must have * at start or end of name (field %s)" % self.name
+                )
+
+            self.display_name_regex = re.compile('%s' % self.name.replace('*', '(.*)'))
 
     def match(self, name):
         if self.dynamic:
@@ -141,6 +145,11 @@ class SolrField(object):
                 return name.endswith(self.name[1:])
             else:
                 return name.startswith(self.name[:-1])
+
+    def display_name(self, name):
+        if self.dynamic:
+            return self.display_name_regex.match(name).group(1)
+        return self.name
 
     def instance_from_user_data(self, data):
         return SolrFieldInstance.from_user_data(self, data)
@@ -154,8 +163,12 @@ class SolrField(object):
     def to_solr(self, value):
         return unicode(value)
 
-    def to_query(self, value):
-        return RawString(self.to_solr(value)).escape_for_lqs_term()
+    def to_query(self, value, escape=True):
+        raw_value = RawString(self.to_solr(value))
+        if escape:
+            return raw_value.escape_for_lqs_term()
+        else:
+            return raw_value
 
     def from_solr(self, value):
         return self.normalize(value)
@@ -168,14 +181,17 @@ class SolrUnicodeField(SolrField):
         else:
             return WildcardString(unicode(value))
 
-    def to_query(self, value):
-        return value.escape_for_lqs_term()
+    def to_query(self, value, escape=True):
+        if escape:
+            return value.escape_for_lqs_term()
+        else:
+            return value
 
     def from_solr(self, value):
         try:
             return unicode(value)
         except UnicodeError:
-            raise SolrError("%s could not be coerced to unicode (field %s)" % 
+            raise SolrError("%s could not be coerced to unicode (field %s)" %
                     (value, self.name))
 
 
@@ -190,7 +206,7 @@ class SolrBooleanField(SolrField):
             elif value.lower() == "false":
                 return False
             else:
-                raise ValueError("sorry, I only understand simple boolean strings (field %s)" % 
+                raise ValueError("sorry, I only understand simple boolean strings (field %s)" %
                         self.name)
         return bool(value)
 
@@ -200,7 +216,7 @@ class SolrBinaryField(SolrField):
         try:
             return str(value)
         except (TypeError, ValueError):
-            raise SolrError("Could not convert data to binary string (field %s)" % 
+            raise SolrError("Could not convert data to binary string (field %s)" %
                     self.name)
 
     def to_solr(self, value):
@@ -215,7 +231,7 @@ class SolrNumericalField(SolrField):
         try:
             v = self.base_type(value)
         except (OverflowError, TypeError, ValueError):
-            raise SolrError("%s is invalid value for %s (field %s)" % 
+            raise SolrError("%s is invalid value for %s (field %s)" %
                     (value, self.__class__, self.name))
         if v < self.min or v > self.max:
             raise SolrError("%s out of range for a %s (field %s)" %
@@ -336,8 +352,8 @@ class SolrFieldInstance(object):
     def to_solr(self):
         return self.field.to_solr(self.value)
 
-    def to_query(self):
-        return self.field.to_query(self.value)
+    def to_query(self, escape=True):
+        return self.field.to_query(self.value, escape=escape)
 
     def to_user_data(self):
         return self.field.to_user_data(self.value)

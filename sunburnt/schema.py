@@ -669,6 +669,9 @@ class SolrResponse(object):
         self.facet_counts = SolrFacetCounts.from_response(details)
         self.highlighting = dict((k, dict(v))
                                  for k, v in details.get("highlighting", ()))
+        self.spellcheck = dict((k, dict(v))
+                                 for k, v in details.get("spellcheck", ()))
+
         more_like_these_nodes = \
             doc.xpath("/response/lst[@name='moreLikeThis']/result")
         more_like_these_results = [SolrResult(schema, node)

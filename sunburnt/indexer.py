@@ -21,18 +21,22 @@ class IndexerMetaclass(type):
     """
     def __new__(cls, name, bases, attrs):
         super_new = super(IndexerMetaclass, cls).__new__
+
+        new_class = super_new(cls, name, bases, {'__module__': attrs['__module__']})
+        base_fields = getattr(new_class, 'base_fields', {})
+        base_meta = getattr(new_class, '_meta', {})
+
         parents = [b for b in bases if isinstance(b, IndexerMetaclass)]
         if not parents:
             # If this isn't a subclass of Model, don't do anything special.
             return super_new(cls, name, bases, attrs)
 
-        base_fields = []
-        meta = None
+        meta = base_meta
         for field_name, obj in attrs.items():
             if isinstance(obj, Field):
-                base_fields.append((field_name, attrs.pop(field_name)))
+                base_fields.update({field_name: attrs.pop(field_name)})
             elif field_name == 'Meta':
-                meta = dict((x, y) for x, y in obj.__dict__.items() if not x.startswith('__'))
+                meta.update(dict((x, y) for x, y in obj.__dict__.items() if not x.startswith('__')))
                 if 'type' not in meta:
                     raise Exception(
                         'Sunburnt indexer requires a type meta to be declared for grouping indices'
@@ -40,8 +44,10 @@ class IndexerMetaclass(type):
 
         if meta is None:
             raise Exception('You must provide Meta attributes for the `%s` indexer.' % name)
-        elif set(meta.keys()).symmetric_difference(['type']):
-            raise Exception('Invalid Meta parameters for `%s` indexer.' % name)
+
+        # NOTE: We want to allow flexible meta parameters
+        # elif set(meta.keys()).symmetric_difference(['type']):
+        #    raise Exception('Invalid Meta parameters for `%s` indexer.' % name)
 
         attrs['base_fields'] = dict(base_fields)
         attrs['_meta'] = meta

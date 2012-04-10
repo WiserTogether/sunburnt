@@ -135,7 +135,7 @@ class BaseIndexer(object):
     def delete(self, records, commit=True):
         if not isinstance(records, (list, tuple)):
             records = [records]
-        self.interface.delete([self.transform(x) for x in records])
+        self.interface.delete([self.transform_id(x) for x in records])
         if commit:
             self.interface.commit()
 
